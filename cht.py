@@ -1,139 +1,130 @@
 import streamlit as st
 import random
 import datetime
+import os
+from langchain.embeddings import HuggingFaceBgeEmbeddings
+from langchain.document_loaders import PyPDFLoader, DirectoryLoader
+from langchain import vectorstores
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_groq import ChatGroq
 
-# Motivational Prompts
-motivation_prompts = [
-    "Believe in yourself! You are capable of amazing things.",
-    "Every day is a new beginning. Take a deep breath and start again.",
-    "Success is the sum of small efforts, repeated daily.",
-    "Keep going. Everything you need will come to you at the perfect time.",
-    "Difficulties in life are intended to make us better, not bitter.",
-    "You are stronger than you think. Keep pushing forward!",
-    "Your potential is limitless. Never stop exploring your capabilities.",
-    "The only way to achieve the impossible is to believe it is possible.",
-    "Challenges are what make life interesting. Overcoming them is what makes life meaningful.",
-    "You are capable, you are strong, and you can do this!"
-]
+# Initialize LangChain LLM
+@st.cache_resource()
+def initialize_llm():
+    return ChatGroq(
+        temperature=0,
+        groq_api_key="YOUR_GROQ_API_KEY",  # Replace with your API Key
+        model_name="llama-3.3-70b-versatile"
+    )
 
-# Anxiety Relief Prompts
-anxiety_relief_prompts = [
-    "Take a deep breath. Inhale for 4 seconds, hold for 4, and exhale for 6.",
-    "Close your eyes and picture your happy place. Stay there for a moment.",
-    "Write down what’s bothering you and set it aside for later.",
-    "Try progressive muscle relaxation – tense each muscle, then relax it.",
-    "Listen to calming music or nature sounds to ease your mind.",
-    "Step outside and take a short walk to clear your thoughts.",
-    "Drink a warm cup of tea or water. Hydration helps relaxation.",
-    "Focus on the present. What are five things you can see and hear?",
-    "Talk to someone you trust about what’s making you anxious.",
-    "Remind yourself: You have overcome challenges before, and you will again."
-]
+# Create or load Vector DB
+@st.cache_resource()
+def create_or_load_vector_db():
+    db_path = "./chroma_db"
+    if os.path.exists(db_path):
+        embeddings = HuggingFaceBgeEmbeddings(model_name='all-mpnet-base-v2')
+        return vectorstores.Chroma(persist_directory=db_path, embedding_function=embeddings)
+    else:
+        os.makedirs('./data/', exist_ok=True)
+        loader = DirectoryLoader('./data/', glob='*.pdf', loader_cls=PyPDFLoader)
+        documents = loader.load()
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        texts = text_splitter.split_documents(documents)
+        embeddings = HuggingFaceBgeEmbeddings(model_name='all-mpnet-base-v2')
+        vector_db = vectorstores.Chroma.from_documents(texts, embeddings, persist_directory=db_path)
+        vector_db.persist()
+        return vector_db
 
-# Study Tips
-study_tips = [
-    "Use the Pomodoro technique – study for 25 mins, take a 5-min break.",
-    "Teach what you learn to someone else. It helps retain information!",
-    "Summarize notes in your own words to enhance understanding.",
-    "Practice active recall – test yourself instead of rereading notes.",
-    "Break large tasks into smaller chunks to avoid feeling overwhelmed.",
-    "Use mnemonic devices to memorize complex concepts.",
-    "Find a distraction-free study environment for better focus.",
-    "Use visual aids like mind maps and diagrams to remember better.",
-    "Get enough sleep! Rest is crucial for memory retention.",
-    "Stay hydrated and take regular breaks to keep your mind fresh."
-]
+# Set up QA Chain
+@st.cache_resource()
+def setup_qa_chain(vector_db, llm):
+    retriever = vector_db.as_retriever()
+    prompt_templates = """You are a supportive mental health chatbot. Answer the following question:
+    {context}
+    User: {question}
+    Chatbot: """
+    PROMPT = PromptTemplate(template=prompt_templates, input_variables=['context', 'question'])
+    return RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=retriever,
+        chain_type_kwargs={"prompt": PROMPT}
+    )
 
-# Self-care Tips
-self_care_tips = [
-    "Take a 5-minute stretch break to ease your muscles.",
-    "Maintain a good posture while studying to avoid back pain.",
-    "Eat brain-boosting foods like nuts, fruits, and dark chocolate.",
-    "Avoid excessive caffeine; try herbal tea instead.",
-    "Get sunlight exposure to boost your mood and energy levels.",
-    "Set realistic goals and celebrate small achievements.",
-    "Listen to calming music while studying to reduce stress.",
-    "Practice gratitude – write down three things you are grateful for.",
-    "Take a deep breath and remind yourself it’s okay to take breaks.",
-    "Limit screen time before bed to ensure better sleep quality."
-]
+# Initialize Chatbot
+llm = initialize_llm()
+vector_db = create_or_load_vector_db()
+qa_chain = setup_qa_chain(vector_db, llm)
 
+def chatbot_response(user_input):
+    return qa_chain.run(user_input) if user_input.strip() else "Please provide a valid input."
+
+# Motivational & Study Prompts
+def get_random_prompt(category):
+    prompts = {
+        "motivation": [
+            "Believe in yourself! You are capable of amazing things.",
+            "Success is the sum of small efforts, repeated daily.",
+            "Challenges make life interesting. Overcoming them makes life meaningful.",
+        ],
+        "anxiety": [
+            "Take a deep breath. Inhale for 4 seconds, hold for 4, and exhale for 6.",
+            "Write down what’s bothering you and set it aside for later.",
+            "Talk to someone you trust about what’s making you anxious.",
+        ],
+        "study": [
+            "Use the Pomodoro technique – study for 25 mins, take a 5-min break.",
+            "Summarize notes in your own words to enhance understanding.",
+            "Practice active recall – test yourself instead of rereading notes.",
+        ],
+    }
+    return random.choice(prompts[category])
+
+# Streamlit UI
 st.set_page_config(page_title="MindEase", layout="wide")
 st.title("🌿 Welcome to MindEase")
 st.subheader("Your personal companion for motivation, study tips, and self-care.")
 
 # Sidebar
 st.sidebar.title("MindEase Tools")
-if st.sidebar.button("Need a boost? Inspire Me!"):
-    st.sidebar.write(random.choice(motivation_prompts))
-
-if st.sidebar.button("Feeling anxious? Anxiety Relief"):
-    st.sidebar.write(random.choice(anxiety_relief_prompts))
-
+if st.sidebar.button("Need Motivation?"):
+    st.sidebar.write(get_random_prompt("motivation"))
+if st.sidebar.button("Feeling Anxious?"):
+    st.sidebar.write(get_random_prompt("anxiety"))
 if st.sidebar.button("Study Tips"):
-    st.sidebar.write(random.choice(study_tips))
+    st.sidebar.write(get_random_prompt("study"))
 
-if st.sidebar.button("Self-care Tips"):
-    st.sidebar.write(random.choice(self_care_tips))
-
-# Emotion-Based Prompt System
+# Emotion-Based Response
 st.subheader("How do you feel today?")
 emotion = st.selectbox("Select your emotion:", ["Happy", "Sad", "Anxious", "Motivated", "Frustrated", "Tired"])
-prompt_mapping = {
-    "Happy": "Keep spreading the joy! Happiness is contagious.",
-    "Sad": "It’s okay to feel sad. Take it one step at a time, and be kind to yourself.",
-    "Anxious": random.choice(anxiety_relief_prompts),
-    "Motivated": "Keep up the great work! Channel your motivation into your goals.",
-    "Frustrated": "Take a deep breath. A short break might help clear your mind.",
-    "Tired": "Rest is just as important as work. Give yourself a moment to recharge."
+emotion_responses = {
+    "Happy": "Keep spreading joy! Happiness is contagious.",
+    "Sad": "It’s okay to feel sad. Take it one step at a time.",
+    "Anxious": get_random_prompt("anxiety"),
+    "Motivated": "Keep up the great work! Channel your energy into goals.",
+    "Frustrated": "Take a deep breath. A short break might help.",
+    "Tired": "Rest is important. Give yourself time to recharge.",
 }
-st.write(prompt_mapping[emotion])
+st.write(emotion_responses[emotion])
 
-# Simple Chatbot
-st.subheader("💬 Chat with MindEase")
-user_input = st.text_input("Type your message here:")
-
-if user_input:
-    greetings = ["hello", "hi", "hey", "hola"]
-    sad_words = ["sad", "down", "depressed", "unhappy"]
-    encouraging_responses = [
-        "You're not alone, and you are stronger than you think! 💙",
-        "Sending you a virtual hug! Things will get better. 💫",
-        "Keep pushing forward, you’ve got this! 🌟",
-        "Even on tough days, you are still amazing! 💖"
-    ]
-    
-    if any(word in user_input.lower() for word in greetings):
-        response = "Hey there! 😊 How can I help today?"
-    elif any(word in user_input.lower() for word in sad_words):
-        response = random.choice(encouraging_responses)
-    else:
-        response = "That's interesting! Tell me more. 😊"
-    
-    st.write("🤖 MindEase:", response)
-
-# Study Planner Generator
+# Study Planner
 st.subheader("📖 Study Planner Generator")
 num_subjects = st.number_input("Number of subjects:", min_value=1, max_value=10, step=1)
-study_plan = {}
+study_time = st.number_input("Total study time (in minutes):", min_value=30, step=10)
+if st.button("Generate Study Plan"):
+    st.write({f"Subject {i+1}": f"Study for {round(study_time / num_subjects, 2)} minutes." for i in range(int(num_subjects))})
 
-time_duration = st.number_input("Total study time (in minutes):", min_value=30, step=10)
-
-generate_plan = st.button("Generate Study Plan")
-if generate_plan:
-    for i in range(1, int(num_subjects) + 1):
-        study_plan[f"Subject {i}"] = f"Study for {round(time_duration / num_subjects, 2)} minutes."
-    st.write(study_plan)
-
-# Daily Affirmations
-st.subheader("✨ Daily Affirmation")
-current_date = datetime.datetime.now().day
-affirmation = motivation_prompts[current_date % len(motivation_prompts)]
-st.write(affirmation)
+# Chatbot
+st.subheader("💬 Chat with MindEase")
+user_input = st.text_input("Ask anything:")
+if st.button("Send"):
+    st.write(chatbot_response(user_input))
 
 # Study Timer
 st.subheader("⏳ Study Timer")
-study_time = st.number_input("Set your study duration (minutes):", min_value=10, max_value=180, step=5)
-break_time = st.selectbox("Break duration:", [5, 10, 15])
+study_duration = st.number_input("Set your study duration (minutes):", min_value=10, max_value=180, step=5)
+break_duration = st.selectbox("Break duration:", [5, 10, 15])
 if st.button("Start Timer"):
-    st.write(f"Study for {study_time} minutes, then take a {break_time}-minute break.")
+    st.write(f"Study for {study_duration} minutes, then take a {break_duration}-minute break.")
